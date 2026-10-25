@@ -1,0 +1,13 @@
+version: 2
+
+models:
+  - name: int_customer_orders
+    description: Lifetime completed-order facts per customer.
+    meta: {owner: data-platform}
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+      - name: lifetime_orders
+        data_tests: [not_null]
+      - name: lifetime_revenue_myr
+        data_tests: [not_null]

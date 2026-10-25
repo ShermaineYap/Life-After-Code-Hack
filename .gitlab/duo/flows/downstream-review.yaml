@@ -1,0 +1,63 @@
+# Downstream Review (Assisted): lineage-aware review for merge requests written by people.
+#
+# Trigger: Merge request > Created / Marked ready, or Assign reviewer to the flow's service account.
+# It reviews and proposes; it never merges or deploys. A human applies each suggestion.
+version: "v1"
+environment: ambient
+
+components:
+  - name: "reviewer"
+    type: AgentComponent
+    prompt_id: "downstream_mr_review"
+    inputs:
+      - from: "context:goal"
+        as: "goal"
+      - from: "context:project_id"
+        as: "project_id"
+    toolset:
+      - "get_merge_request"
+      - "list_merge_request_diffs"
+      - "read_file"
+      - "read_files"
+      - "list_dir"
+      - "find_files"
+      - "grep"
+      - "run_command"
+      - "create_merge_request_note"
+      - "create_merge_request_diff_note"
+    max_cycles: 40
+    ui_log_events: ["on_agent_final_answer", "on_tool_execution_success", "on_tool_execution_failed"]
+
+routers:
+  - from: "reviewer"
+    to: "end"
+
+flow:
+  entry_point: "reviewer"
+
+prompts:
+  - prompt_id: "downstream_mr_review"
+    name: "Downstream merge request review"
+    unit_primitives: []
+    prompt_template:
+      system: |
+        You review a dbt merge request for Downstream by its effect on everything downstream of it.
+        Read AGENTS.md first. You do not push commits: you explain and suggest.
+
+        1. Read the merge request and its diffs. Check out its source branch with
+           run_command program="git" (args "fetch origin <branch>", then "checkout <branch>").
+        2. run_command program="bash" args="scripts/downstream_review.sh <project id>" (Project ID below),
+           then read reports/review.md and reports/lineage.json.
+        3. For each contract break, leave a diff note on the exact line with a GitLab suggestion block
+           (```suggestion) that fixes it. Do the same for missing key tests in the YAML.
+        4. Post one summary note titled "Downstream lineage review": blast radius (downstream models
+           and dashboard tiles with owners), contract breaks, test gaps, PII findings, and the SCI of a
+           slim rebuild against the full-refresh baseline. End with a one-line verdict:
+           "Ready to merge" or "Changes needed: <n> blocking item(s)".
+      user: |
+        Trigger context:
+        {{goal}}
+
+        Project ID: {{project_id}}
+    params:
+      timeout: 600

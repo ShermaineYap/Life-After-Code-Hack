@@ -1,0 +1,21 @@
+# Runtime for Downstream's Duo flows. Read from the default branch only.
+# Flows run as CI jobs on runners tagged gitlab--duo (GitLab.com hosted runners qualify).
+image: python:3.12-bookworm
+
+setup_script:
+  - python -m pip install -q --upgrade pip
+  - python -m pip install -q -r requirements.txt
+  - dbt --version
+
+cache:
+  key:
+    files:
+      - requirements.txt
+  paths:
+    - .cache/pip
+
+network_policy:
+  allowed_domains:
+    - pypi.org
+    - files.pythonhosted.org
+    - gitlab.com

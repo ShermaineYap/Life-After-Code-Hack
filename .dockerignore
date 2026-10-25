@@ -1,0 +1,4 @@
+*
+!dashboard/
+!build/warehouse.duckdb
+dashboard/__pycache__/

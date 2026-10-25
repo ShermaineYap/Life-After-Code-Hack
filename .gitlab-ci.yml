@@ -1,0 +1,376 @@
+# Downstream: the post-code lifecycle for a data product.
+#
+# Merge request pipelines:  lineage review -> slim dbt build -> tests -> PII + SAST + secrets + dependencies
+# Default-branch pipelines: ... -> package (image + warehouse) -> staging (deploy + monitor, auto-rollback)
+#                            -> release (versioned, with evidence) -> production (approval gate) -> monitor
+# Scheduled pipelines:      hourly production monitor with automatic rollback.
+#
+# The GitLab Duo flow in .gitlab/duo/flows/ drives this pipeline: it opens the merge
+# request, reads these reports, fixes what fails, merges, and presses the production
+# button only after a human approves (Supervised) or by itself (Hands-off).
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never                                   # releases create tags; don't re-run on them
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push"
+      when: never                                   # no duplicate branch + MR pipelines
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+stages: [build, test, package, staging, release, production, monitor]
+
+include:
+  - template: Jobs/SAST.gitlab-ci.yml
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+  - template: Jobs/Dependency-Scanning.v2.gitlab-ci.yml
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  DBT_TARGET: ci
+  DUCKDB_PATH: target/warehouse.duckdb
+  # supervised = production waits for an approval; hands-off = production deploys itself
+  DOWNSTREAM_AUTONOMY: supervised
+  GCP_REGION: asia-southeast1
+  GCP_AR_REPO: downstream
+  STAGING_SERVICE: downstream-staging
+  PRODUCTION_SERVICE: downstream-prod
+  DEMO_INJECT_ANOMALY: "false"                      # set to "true" on a manual run to demo rollback
+
+.python:
+  image: python:3.12-bookworm
+  cache:
+    key: {files: [requirements.txt]}
+    paths: [.cache/pip]
+  before_script:
+    - pip install -q -r requirements.txt
+
+.default_branch: &default_branch
+  - if: $CI_PIPELINE_SOURCE == "schedule"
+    when: never
+  - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ------------------------------------------------------------------ build ----
+
+lineage-review:
+  extends: .python
+  stage: build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - when: on_success
+  variables:
+    GIT_DEPTH: "0"                                  # need tags to compute the next version
+  script:
+    - bash scripts/fetch_state.sh
+    - dbt parse --profiles-dir .
+    - python scripts/lineage_impact.py
+        --manifest target/manifest.json --state-manifest state/manifest.json --state-catalog state/catalog.json
+        --json reports/lineage.json --markdown reports/lineage.md --fail-on-breaking
+    - PREVIOUS=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+    - python scripts/release_notes.py --previous "$PREVIOUS" --lineage reports/lineage.json --out-dir reports
+    - echo "RELEASE_VERSION=$(cat reports/version.txt)" > release.env
+    - echo "PREVIOUS_VERSION=$PREVIOUS" >> release.env
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [reports/, state/, monitoring/]
+    reports:
+      dotenv: release.env
+
+dbt-build:
+  extends: .python
+  stage: build
+  needs: [lineage-review]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - when: on_success
+  script:
+    - VARS="{inject_anomaly: ${DEMO_INJECT_ANOMALY}}"
+    # Merge requests rebuild only changed models and their descendants on top of
+    # main's warehouse (slim CI). The default branch always does a full build:
+    # it is the release artefact and the carbon baseline.
+    - |
+      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ] && [ -f state/warehouse.duckdb ] && [ -f state/manifest.json ]; then
+        mkdir -p target && cp state/warehouse.duckdb target/warehouse.duckdb
+        dbt build --profiles-dir . --select state:modified+ --state state --vars "$VARS"
+        LABEL="slim (state:modified+)"
+      else
+        dbt build --profiles-dir . --vars "$VARS"
+        LABEL="full refresh"
+      fi
+      cp target/run_results.json reports/run_results.json
+      python scripts/sci.py --run-results target/run_results.json --label "$LABEL" --region "$GCP_REGION" \
+        --baseline state/sci.json --json reports/sci.json --markdown reports/sci.md
+    - dbt docs generate --profiles-dir . --static --vars "$VARS"
+    - mkdir -p build && cp target/warehouse.duckdb build/warehouse.duckdb
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - target/manifest.json
+      - target/catalog.json
+      - target/run_results.json
+      - target/static_index.html
+      - build/warehouse.duckdb
+      - reports/
+
+# ------------------------------------------------------------------- test ----
+
+pii-sentinel:
+  extends: .python
+  stage: test
+  needs: [dbt-build]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - when: on_success
+  script:
+    - python scripts/pii_sentinel.py --warehouse build/warehouse.duckdb
+        --json reports/pii.json --markdown reports/pii.md --junit reports/pii-junit.xml
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [reports/pii.json, reports/pii.md]
+    reports:
+      junit: reports/pii-junit.xml
+
+unit-tests:
+  extends: .python
+  stage: test
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - when: on_success
+  script:
+    - pip install -q -r requirements-dev.txt
+    - pytest pytests -q --junitxml=reports/pytest-junit.xml
+  artifacts:
+    when: always
+    reports:
+      junit: reports/pytest-junit.xml
+
+review-report:
+  image: alpine:3.20
+  stage: test
+  needs: [lineage-review, dbt-build, pii-sentinel]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    # One Markdown report the Duo flow (and humans) read on the merge request.
+    - cat reports/lineage.md reports/sci.md reports/pii.md > reports/review.md
+    - cat reports/review.md
+  artifacts:
+    expire_in: 30 days
+    paths: [reports/review.md]
+
+# ---------------------------------------------------------------- package ----
+
+package-image:
+  stage: package
+  image: docker:27
+  services: [docker:27-dind]
+  needs: [lineage-review, dbt-build, pii-sentinel]
+  rules: *default_branch
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build -t "$CI_REGISTRY_IMAGE/dashboard:$RELEASE_VERSION" -t "$CI_REGISTRY_IMAGE/dashboard:latest" .
+    - docker push "$CI_REGISTRY_IMAGE/dashboard:$RELEASE_VERSION"
+    - docker push "$CI_REGISTRY_IMAGE/dashboard:latest"
+    - |
+      if [ -n "${GCP_PROJECT_ID:-}" ] && [ -n "${GCP_SA_KEY:-}" ]; then
+        AR="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$GCP_AR_REPO/dashboard:$RELEASE_VERSION"
+        cat "$GCP_SA_KEY" | docker login -u _json_key --password-stdin "https://$GCP_REGION-docker.pkg.dev"
+        docker tag "$CI_REGISTRY_IMAGE/dashboard:$RELEASE_VERSION" "$AR" && docker push "$AR"
+      fi
+
+package-warehouse:
+  stage: package
+  image: curlimages/curl:latest
+  needs: [lineage-review, dbt-build, pii-sentinel]
+  rules: *default_branch
+  script:
+    # The tested warehouse file and its manifest go to the generic Package Registry,
+    # versioned with the release.
+    - |
+      for f in build/warehouse.duckdb target/manifest.json target/catalog.json; do
+        curl --fail --silent --show-error --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$f" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/downstream-warehouse/${RELEASE_VERSION#v}/$(basename $f)"
+        echo
+      done
+
+# ---------------------------------------------------------------- staging ----
+
+.deploy:
+  image: google/cloud-sdk:slim
+  script:
+    - IMAGE="$GCP_REGION-docker.pkg.dev/${GCP_PROJECT_ID:-none}/$GCP_AR_REPO/dashboard:$RELEASE_VERSION"
+    - bash scripts/deploy_cloudrun.sh "$SERVICE" "$IMAGE"
+    - cat deploy.env
+  artifacts:
+    reports:
+      dotenv: deploy.env
+
+.monitor:
+  extends: .python
+  script:
+    - |
+      if [ -n "${SERVICE_URL:-}" ]; then
+        python scripts/monitor.py --url "$SERVICE_URL" --baseline monitoring/baseline.json \
+          --json reports/monitor.json --markdown reports/monitor.md --write-baseline monitoring/baseline.json
+      else
+        echo "Dry-run deploy: monitoring the built warehouse instead of a live service."
+        python scripts/monitor.py --warehouse build/warehouse.duckdb --baseline monitoring/baseline.json \
+          --json reports/monitor.json --markdown reports/monitor.md --write-baseline monitoring/baseline.json
+      fi
+  artifacts:
+    when: always
+    expire_in: 90 days
+    paths: [reports/monitor.json, reports/monitor.md, monitoring/baseline.json]
+
+.rollback:
+  image: google/cloud-sdk:slim
+  when: on_failure
+  script:
+    - bash scripts/rollback_cloudrun.sh "$SERVICE"
+    - |
+      if [ -n "${GITLAB_PRIVATE_TOKEN:-}" ]; then
+        python3 scripts/ds.py create-incident \
+          --title "Data release $RELEASE_VERSION rolled back on $CI_ENVIRONMENT_NAME" \
+          --body-file reports/monitor.md
+      else
+        echo "No GITLAB_PRIVATE_TOKEN: the Duo flow opens the incident instead."
+      fi
+
+deploy-staging:
+  extends: .deploy
+  stage: staging
+  needs: [lineage-review, dbt-build, package-image, package-warehouse]
+  rules: *default_branch
+  variables: {SERVICE: $STAGING_SERVICE}
+  environment:
+    name: staging
+    url: $SERVICE_URL
+    deployment_tier: staging
+
+monitor-staging:
+  extends: .monitor
+  stage: staging
+  needs: [lineage-review, dbt-build, deploy-staging]
+  rules: *default_branch
+
+rollback-staging:
+  extends: .rollback
+  stage: staging
+  needs: [lineage-review, deploy-staging, monitor-staging]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_failure
+  variables: {SERVICE: $STAGING_SERVICE}
+
+# ---------------------------------------------------------------- release ----
+
+prepare-release:
+  extends: .python
+  stage: release
+  needs: [lineage-review, dbt-build, pii-sentinel, monitor-staging]
+  rules: *default_branch
+  script:
+    - python scripts/release_notes.py --previous "$PREVIOUS_VERSION" --lineage reports/lineage.json
+        --pii reports/pii.json --sci reports/sci.json --manifest target/manifest.json --out-dir reports
+    - test "$(cat reports/version.txt)" = "$RELEASE_VERSION"
+  artifacts:
+    expire_in: never
+    paths: [reports/release.md, reports/evidence.json, reports/sci.json, reports/lineage.json]
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:latest
+  needs: [lineage-review, prepare-release]
+  rules: *default_branch
+  script:
+    - echo "Releasing $RELEASE_VERSION"
+  release:
+    tag_name: $RELEASE_VERSION
+    ref: $CI_COMMIT_SHA
+    name: "Data release $RELEASE_VERSION"
+    description: ./reports/release.md
+    assets:
+      links:
+        - name: Evidence bundle (lineage, PII, SCI)
+          url: "$CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_SHA/raw/reports/evidence.json?job=prepare-release"
+          link_type: other
+        - name: Dashboard image
+          url: "$CI_PROJECT_URL/container_registry"
+          link_type: image
+        - name: Warehouse package
+          url: "$CI_PROJECT_URL/-/packages"
+          link_type: package
+
+pages:
+  stage: release
+  image: alpine:3.20
+  needs: [dbt-build]
+  rules: *default_branch
+  script:
+    - mkdir -p public && cp target/static_index.html public/index.html
+  artifacts:
+    paths: [public]
+
+# ------------------------------------------------------------- production ----
+
+deploy-production:
+  extends: .deploy
+  stage: production
+  needs: [lineage-review, release]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $DOWNSTREAM_AUTONOMY == "hands-off"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual                                  # the Supervised approval gate
+      allow_failure: false
+  variables: {SERVICE: $PRODUCTION_SERVICE}
+  environment:
+    name: production
+    url: $SERVICE_URL
+    deployment_tier: production
+
+monitor-production:
+  extends: .monitor
+  stage: monitor
+  needs: [lineage-review, dbt-build, deploy-production]
+  rules: *default_branch
+
+rollback-production:
+  extends: .rollback
+  stage: monitor
+  needs: [lineage-review, deploy-production, monitor-production]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_failure
+  variables: {SERVICE: $PRODUCTION_SERVICE}
+
+# Hourly watch on production between releases (create the schedule in Build > Pipeline schedules).
+monitor-scheduled:
+  extends: .python
+  stage: monitor
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $PRODUCTION_URL
+  script:
+    - bash scripts/fetch_state.sh
+    - python scripts/monitor.py --url "$PRODUCTION_URL" --baseline monitoring/baseline.json
+        --json reports/monitor.json --markdown reports/monitor.md
+  artifacts:
+    when: always
+    paths: [reports/monitor.md]

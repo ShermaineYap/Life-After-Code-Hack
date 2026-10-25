@@ -1,0 +1,68 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: One row per customer. Contact details are reduced to a salted email hash.
+    meta: {owner: data-platform, pii: masked}
+    columns:
+      - name: customer_id
+        description: Primary key.
+        data_tests: [unique, not_null]
+      - name: customer_name
+        description: Display name. Not contact information.
+      - name: email_hash
+        description: sha256 of the normalised email plus a salt. Never the raw email.
+        meta: {pii: masked}
+        data_tests: [not_null]
+      - name: country
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [MY, SG, ID, TH]
+      - name: signup_date
+        data_tests: [not_null]
+      - name: is_test_account
+        description: True for internal QA accounts, which every mart must exclude.
+        data_tests: [not_null]
+
+  - name: stg_orders
+    description: One row per order.
+    meta: {owner: data-platform}
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+      - name: order_date
+        data_tests: [not_null]
+      - name: order_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [completed, refunded, cancelled]
+      - name: amount_myr
+        description: Order value in Malaysian ringgit.
+        data_tests: [not_null]
+
+  - name: stg_events
+    description: One row per product event.
+    meta: {owner: data-platform}
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: customer_id
+        data_tests: [not_null]
+      - name: event_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [login, page_view, add_to_cart]
+      - name: event_at
+        data_tests: [not_null]
+      - name: event_date
+        data_tests: [not_null]

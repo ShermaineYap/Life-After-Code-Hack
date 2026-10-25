@@ -1,0 +1,48 @@
+name: downstream
+version: "1.0.0"
+config-version: 2
+profile: downstream
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # Demo switch: when true, stg_orders keeps ~10% of rows so the post-deploy
+  # monitor sees a row-count collapse and Downstream rolls the release back.
+  inject_anomaly: false
+
+seeds:
+  downstream:
+    +schema: raw
+    raw_customers:
+      +column_types:
+        customer_id: integer
+        signup_date: date
+        is_test_account: boolean
+    raw_orders:
+      +column_types:
+        order_id: integer
+        customer_id: integer
+        order_date: date
+        amount_myr: decimal(10,2)
+    raw_events:
+      +column_types:
+        event_id: integer
+        customer_id: integer
+        event_ts: timestamp
+
+models:
+  downstream:
+    staging:
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: view
+      +schema: intermediate
+    marts:
+      +materialized: table
+      +schema: marts

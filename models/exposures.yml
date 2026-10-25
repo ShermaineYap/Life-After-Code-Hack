@@ -1,0 +1,40 @@
+version: 2
+
+# Each dashboard tile is a dbt exposure, so the lineage reviewer can say
+# exactly which tiles a change reaches ("blast radius").
+exposures:
+  - name: tile_revenue_trend
+    label: "Dashboard tile: Net revenue by month"
+    type: dashboard
+    maturity: high
+    url: /#revenue
+    owner: {name: Finance Analytics, email: finance@example-store.test}
+    depends_on:
+      - ref('kpi_dashboard')
+
+  - name: tile_revenue_by_country
+    label: "Dashboard tile: Revenue by country"
+    type: dashboard
+    maturity: high
+    url: /#country
+    owner: {name: Finance Analytics, email: finance@example-store.test}
+    depends_on:
+      - ref('fct_revenue')
+
+  - name: tile_new_customers
+    label: "Dashboard tile: New customers per month"
+    type: dashboard
+    maturity: medium
+    url: /#customers
+    owner: {name: Growth, email: growth@example-store.test}
+    depends_on:
+      - ref('kpi_dashboard')
+
+  - name: tile_customer_segments
+    label: "Dashboard tile: Customer segments"
+    type: dashboard
+    maturity: medium
+    url: /#segments
+    owner: {name: Growth, email: growth@example-store.test}
+    depends_on:
+      - ref('dim_customer')

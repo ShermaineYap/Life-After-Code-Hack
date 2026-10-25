@@ -1,0 +1,67 @@
+version: 2
+
+models:
+  - name: dim_customer
+    description: Customer dimension for the dashboard's customer table.
+    meta: {owner: analytics, contract: v1}
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+      - name: customer_name
+      - name: email_hash
+        meta: {pii: masked}
+      - name: country
+      - name: signup_date
+      - name: is_test_account
+        data_tests: [not_null]
+      - name: first_order_date
+      - name: last_order_date
+      - name: lifetime_orders
+        data_tests: [not_null]
+      - name: lifetime_revenue_myr
+        data_tests: [not_null]
+      - name: customer_segment
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [vip, repeat, one_time, prospect]
+
+  - name: fct_revenue
+    description: Monthly revenue by country, test accounts excluded.
+    meta: {owner: finance-analytics, contract: v1}
+    columns:
+      - name: order_month
+        data_tests: [not_null]
+      - name: country
+        data_tests: [not_null]
+      - name: completed_orders
+        data_tests: [not_null]
+      - name: gross_revenue_myr
+        data_tests: [not_null]
+      - name: refunded_myr
+        data_tests: [not_null]
+      - name: net_revenue_myr
+        data_tests: [not_null]
+
+  - name: kpi_dashboard
+    description: One row per month with the headline KPI numbers.
+    meta: {owner: analytics, contract: v1}
+    columns:
+      - name: order_month
+        data_tests: [unique, not_null]
+      - name: orders
+        data_tests: [not_null]
+      - name: net_revenue_myr
+        data_tests: [not_null]
+      - name: new_customers
+        data_tests: [not_null]
+      - name: avg_order_value_myr
+
+  - name: meta_build_info
+    description: Build metadata used by /health and the post-deploy monitor.
+    meta: {owner: data-platform}
+    columns:
+      - name: invocation_id
+        data_tests: [not_null]
+      - name: order_rows
+        data_tests: [not_null]

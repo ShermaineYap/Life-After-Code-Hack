@@ -1,0 +1,6 @@
+dbt-core>=1.10,<1.13
+dbt-duckdb>=1.10,<1.12
+duckdb>=1.2,<3
+fastapi>=0.115
+uvicorn>=0.30
+pyyaml>=6

@@ -1,0 +1,133 @@
+diff -ruN a/models/exposures.yml b/models/exposures.yml
+--- a/models/exposures.yml	2026-10-25 17:14:00.907444364 +0800
++++ b/models/exposures.yml	2026-10-25 17:14:00.910144060 +0800
+@@ -38,3 +38,13 @@
+     owner: {name: Growth, email: growth@example-store.test}
+     depends_on:
+       - ref('dim_customer')
++
++  - name: tile_active_customers
++    label: "Dashboard tile: Monthly active customers"
++    type: dashboard
++    maturity: medium
++    url: /#active
++    owner: {name: Growth, email: growth@example-store.test}
++    depends_on:
++      - ref('kpi_dashboard')
++      - ref('fct_monthly_active_customers')
+diff -ruN a/models/intermediate/int_customer_orders.sql b/models/intermediate/int_customer_orders.sql
+--- a/models/intermediate/int_customer_orders.sql	2026-10-25 17:14:00.907099471 +0800
++++ b/models/intermediate/int_customer_orders.sql	2026-10-25 17:14:00.909807382 +0800
+@@ -4,7 +4,7 @@
+     min(order_date)             as first_order_date,
+     max(order_date)             as last_order_date,
+     count(*)                    as lifetime_orders,
+-    sum(amount_myr)             as lifetime_revenue_myr
++    sum(order_amount_myr)             as lifetime_revenue_myr
+ from {{ ref('stg_orders') }}
+ where order_status = 'completed'
+ group by customer_id
+diff -ruN a/models/marts/_marts.yml b/models/marts/_marts.yml
+--- a/models/marts/_marts.yml	2026-10-25 17:14:00.907367902 +0800
++++ b/models/marts/_marts.yml	2026-10-25 17:14:00.910008886 +0800
+@@ -56,6 +56,8 @@
+       - name: new_customers
+         data_tests: [not_null]
+       - name: avg_order_value_myr
++      - name: active_customers
++        data_tests: [not_null]
+ 
+   - name: meta_build_info
+     description: Build metadata used by /health and the post-deploy monitor.
+@@ -65,3 +67,12 @@
+         data_tests: [not_null]
+       - name: order_rows
+         data_tests: [not_null]
++
++  - name: fct_monthly_active_customers
++    description: Distinct real customers with a product event or completed order, per month.
++    meta: {owner: growth, contract: v1}
++    columns:
++      - name: activity_month
++        data_tests: [unique, not_null]
++      - name: active_customers
++        data_tests: [not_null]
+diff -ruN a/models/marts/fct_monthly_active_customers.sql b/models/marts/fct_monthly_active_customers.sql
+--- a/models/marts/fct_monthly_active_customers.sql	1970-01-01 07:30:00.000000000 +0730
++++ b/models/marts/fct_monthly_active_customers.sql	2026-10-25 17:14:00.910047821 +0800
+@@ -0,0 +1,18 @@
++-- Reference solution for demo issue 1 (what a correct agent MR looks like).
++-- Active customer = a real (non-test) customer with at least one product event
++-- or completed order in the month.
++with activity as (
++    select customer_id, cast(date_trunc('month', event_date) as date) as activity_month
++    from {{ ref('stg_events') }}
++    union
++    select customer_id, cast(date_trunc('month', order_date) as date) as activity_month
++    from {{ ref('stg_orders') }}
++    where order_status = 'completed'
++)
++select
++    a.activity_month,
++    count(distinct a.customer_id) as active_customers
++from activity a
++join {{ ref('stg_customers') }} c using (customer_id)
++where not c.is_test_account
++group by a.activity_month
+diff -ruN a/models/marts/fct_revenue.sql b/models/marts/fct_revenue.sql
+--- a/models/marts/fct_revenue.sql	2026-10-25 17:14:00.907406382 +0800
++++ b/models/marts/fct_revenue.sql	2026-10-25 17:14:00.910083973 +0800
+@@ -3,10 +3,10 @@
+     cast(date_trunc('month', o.order_date) as date)                         as order_month,
+     c.country,
+     count(*) filter (where o.order_status = 'completed')                     as completed_orders,
+-    coalesce(sum(o.amount_myr) filter (where o.order_status = 'completed'), 0) as gross_revenue_myr,
+-    coalesce(sum(o.amount_myr) filter (where o.order_status = 'refunded'), 0) as refunded_myr,
+-    coalesce(sum(o.amount_myr) filter (where o.order_status = 'completed'), 0)
+-      - coalesce(sum(o.amount_myr) filter (where o.order_status = 'refunded'), 0)
++    coalesce(sum(o.order_amount_myr) filter (where o.order_status = 'completed'), 0) as gross_revenue_myr,
++    coalesce(sum(o.order_amount_myr) filter (where o.order_status = 'refunded'), 0) as refunded_myr,
++    coalesce(sum(o.order_amount_myr) filter (where o.order_status = 'completed'), 0)
++      - coalesce(sum(o.order_amount_myr) filter (where o.order_status = 'refunded'), 0)
+                                                                             as net_revenue_myr
+ from {{ ref('stg_orders') }} o
+ join {{ ref('stg_customers') }} c using (customer_id)
+diff -ruN a/models/marts/kpi_dashboard.sql b/models/marts/kpi_dashboard.sql
+--- a/models/marts/kpi_dashboard.sql	2026-10-25 17:14:00.907292966 +0800
++++ b/models/marts/kpi_dashboard.sql	2026-10-25 17:14:00.909930970 +0800
+@@ -13,9 +13,11 @@
+ )
+ select
+     r.order_month,
++    coalesce(m.active_customers, 0)                             as active_customers,
+     r.orders,
+     round(r.net_revenue_myr, 2)                                  as net_revenue_myr,
+     coalesce(n.new_customers, 0)                                 as new_customers,
+     round(r.net_revenue_myr / nullif(r.orders, 0), 2)            as avg_order_value_myr
+ from revenue r
+ left join new_customers n using (order_month)
++left join {{ ref('fct_monthly_active_customers') }} m on m.activity_month = r.order_month
+diff -ruN a/models/staging/_staging.yml b/models/staging/_staging.yml
+--- a/models/staging/_staging.yml	2026-10-25 17:14:00.907019610 +0800
++++ b/models/staging/_staging.yml	2026-10-25 17:14:00.909594667 +0800
+@@ -45,7 +45,7 @@
+           - accepted_values:
+               arguments:
+                 values: [completed, refunded, cancelled]
+-      - name: amount_myr
++      - name: order_amount_myr
+         description: Order value in Malaysian ringgit.
+         data_tests: [not_null]
+ 
+diff -ruN a/models/staging/stg_orders.sql b/models/staging/stg_orders.sql
+--- a/models/staging/stg_orders.sql	2026-10-25 17:14:00.906960663 +0800
++++ b/models/staging/stg_orders.sql	2026-10-25 17:14:00.909631931 +0800
+@@ -4,7 +4,7 @@
+     customer_id,
+     order_date,
+     status      as order_status,
+-    amount_myr
++    amount_myr as order_amount_myr
+ from {{ ref('raw_orders') }}
+ {% if var('inject_anomaly', false) %}
+ -- Demo only: simulate an upstream extract that silently lost ~90% of rows.

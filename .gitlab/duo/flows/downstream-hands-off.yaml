@@ -1,0 +1,330 @@
+# Downstream (Hands-off): GENERATED from downstream.yaml by scripts/build_flows.py. Do not edit.
+#
+# Same flow as the Supervised version without the human approval step:
+#   triage -> developer -> lineage_reviewer -> gatekeeper -> deployer -> end
+# Pair it with the CI variable DOWNSTREAM_AUTONOMY=hands-off so deploy-production runs by itself.
+# You open an issue; the next time you look, the change is live (or rolled back with an incident).
+version: v1
+environment: ambient
+components:
+- name: triage
+  type: AgentComponent
+  prompt_id: downstream_triage
+  inputs:
+  - from: context:goal
+    as: goal
+  - from: context:project_id
+    as: project_id
+  toolset:
+  - get_issue
+  - get_work_item
+  - list_issue_notes
+  - create_issue_note
+  - update_issue
+  - read_file
+  - read_files
+  - list_dir
+  - find_files
+  - grep
+  max_cycles: 25
+  ui_log_events:
+  - on_agent_final_answer
+  - on_tool_execution_success
+  - on_tool_execution_failed
+- name: developer
+  type: AgentComponent
+  prompt_id: downstream_developer
+  inputs:
+  - from: context:project_id
+    as: project_id
+  - from: context:triage.final_answer
+    as: plan
+  toolset:
+  - read_file
+  - read_files
+  - list_dir
+  - find_files
+  - grep
+  - edit_file
+  - create_file_with_contents
+  - mkdir
+  - run_command
+  - create_merge_request
+  - create_issue_note
+  max_cycles: 60
+  ui_log_events:
+  - on_agent_final_answer
+  - on_tool_execution_success
+  - on_tool_execution_failed
+- name: lineage_reviewer
+  type: AgentComponent
+  prompt_id: downstream_lineage_reviewer
+  inputs:
+  - from: context:project_id
+    as: project_id
+  - from: context:developer.final_answer
+    as: change
+  toolset:
+  - read_file
+  - read_files
+  - list_dir
+  - find_files
+  - grep
+  - edit_file
+  - create_file_with_contents
+  - run_command
+  - get_merge_request
+  - list_merge_request_diffs
+  - create_merge_request_note
+  max_cycles: 60
+  ui_log_events:
+  - on_agent_final_answer
+  - on_tool_execution_success
+  - on_tool_execution_failed
+- name: gatekeeper
+  type: AgentComponent
+  prompt_id: downstream_gatekeeper
+  inputs:
+  - from: context:project_id
+    as: project_id
+  - from: context:developer.final_answer
+    as: change
+  - from: context:lineage_reviewer.final_answer
+    as: review
+  toolset:
+  - run_command
+  - read_file
+  - edit_file
+  - grep
+  - find_files
+  - get_pipeline_failing_jobs
+  - get_job_logs
+  - get_merge_request
+  - create_merge_request_note
+  max_cycles: 80
+  ui_log_events:
+  - on_agent_final_answer
+  - on_tool_execution_success
+  - on_tool_execution_failed
+- name: deployer
+  type: AgentComponent
+  prompt_id: downstream_deployer
+  inputs:
+  - from: context:project_id
+    as: project_id
+  - from: context:goal
+    as: goal
+  - from: context:gatekeeper.final_answer
+    as: release
+  toolset:
+  - run_command
+  - read_file
+  - create_issue_note
+  - update_issue
+  - get_job_logs
+  max_cycles: 40
+  ui_log_events:
+  - on_agent_final_answer
+  - on_tool_execution_success
+  - on_tool_execution_failed
+routers:
+- from: triage
+  to: developer
+- from: developer
+  to: lineage_reviewer
+- from: lineage_reviewer
+  to: gatekeeper
+- from: gatekeeper
+  to: deployer
+- from: deployer
+  to: end
+flow:
+  entry_point: triage
+prompts:
+- prompt_id: downstream_triage
+  name: Downstream triage
+  unit_primitives: []
+  prompt_template:
+    system: "You are the triage agent of Downstream, which runs the post-code lifecycle of a dbt\nanalytics project\
+      \ (DuckDB warehouse, KPI dashboard on Cloud Run). Read AGENTS.md at the\nrepository root first; it describes\
+      \ the models, conventions and rules.\n\nYour job: turn a data request in an issue into a precise, testable\
+      \ plan. You do not write code.\n\n1. Identify the issue from the trigger context (it contains an issue URL\
+      \ or \"Issue IID: <n>\").\n   Read it with get_issue (or get_work_item) and read its existing comments.\n\
+      2. Read the relevant models under models/ and models/exposures.yml so the plan names real\n   models, columns\
+      \ and dashboard tiles.\n3. Post ONE comment on the issue, in this format:\n   ### Downstream plan\n   **Request:**\
+      \ one sentence.\n   **Acceptance criteria:** 3-6 checkable bullets (column names, grain, filters such as\n\
+      \   excluding is_test_account, expected row grain).\n   **Data tests:** the exact dbt tests to add (unique,\
+      \ not_null, accepted_values,\n   relationships, or a singular test) per column.\n   **Models touched:** new\
+      \ and changed model files; the dashboard tile/exposure if any.\n   **Branch:** downstream/<issue-iid>-<short-slug>\n\
+      4. Add the label \"downstream::in-progress\" with update_issue (keep existing labels).\n\nIf the issue is\
+      \ not a data/analytics change, or is too vague to test, say so in the comment,\nask the one question that\
+      \ would unblock it, and make your final answer start with \"BLOCKED:\".\n"
+    user: 'Trigger context:
+
+      {{goal}}
+
+
+      Project ID: {{project_id}}
+
+
+      Your final answer must contain: the issue IID, the issue URL, the branch name, and the full
+
+      plan you posted (acceptance criteria, tests, models touched).
+
+      '
+  params:
+    timeout: 300
+- prompt_id: downstream_developer
+  name: Downstream developer
+  unit_primitives: []
+  prompt_template:
+    system: "You are the developer agent of Downstream. You implement a planned change to a dbt project\nand open\
+      \ a merge request. Read AGENTS.md first and follow its conventions exactly.\n\nIf the plan starts with \"\
+      BLOCKED:\", do nothing and repeat that as your final answer.\n\nWork in the repository checkout:\n1. run_command\
+      \ program=\"git\" args=\"checkout -b <branch from the plan>\"\n2. Implement the change: SQL in models/<layer>/<name>.sql,\
+      \ columns + tests in the layer's\n   YAML file, and an exposure in models/exposures.yml if the plan adds a\
+      \ dashboard tile.\n   Every new model needs a description, every column a test where the plan asks for one,\n\
+      \   and key columns (*_id, *_month) unique + not_null.\n3. Verify locally: run_command program=\"bash\" args=\"\
+      scripts/downstream_review.sh <project id>\"\n   and read reports/review.md. Fix and re-run until it says \"\
+      ready to merge\". Never weaken\n   or delete an existing test to get green.\n4. Commit and push: run_command\
+      \ program=\"git\" with args \"add -A\", then\n   args \"commit -m '<conventional commit message> (#<issue\
+      \ iid>)'\", then\n   args \"push -u origin <branch>\".\n5. create_merge_request into the default branch with\
+      \ title \"<summary> (#<iid>)\" and a\n   description that starts with \"Closes #<iid>\" and pastes reports/review.md.\n\
+      6. Comment on the issue with the merge request link.\n"
+    user: 'Project ID: {{project_id}}
+
+
+      Plan from triage:
+
+      {{plan}}
+
+
+      Your final answer must contain: the merge request IID, its URL, the branch name, the issue IID,
+
+      and the files you changed.
+
+      '
+  params:
+    timeout: 600
+- prompt_id: downstream_lineage_reviewer
+  name: Downstream lineage reviewer
+  unit_primitives: []
+  prompt_template:
+    system: "You are the lineage reviewer of Downstream. You review a dbt merge request by its effect on\neverything\
+      \ downstream of it, not just its diff, and you fix what you find on the same branch.\n\nIf the change summary\
+      \ starts with \"BLOCKED:\", repeat it as your final answer and stop.\n\n1. Make sure you are on the merge\
+      \ request's source branch (run_command program=\"git\"\n   args=\"checkout <branch>\"; then args=\"pull\"\
+      ).\n2. run_command program=\"bash\" args=\"scripts/downstream_review.sh <project id>\" and read\n   reports/review.md,\
+      \ reports/lineage.json and reports/sci.json.\n3. Fix, in this order:\n   a. Contract breaks: a column removed\
+      \ or renamed in one model but still used downstream.\n      Prefer updating the downstream models in the same\
+      \ MR; if the rename was not part of the\n      plan, alias the old name back instead.\n   b. Test gaps: add\
+      \ the missing unique/not_null/accepted_values tests the report lists.\n   c. PII findings: replace raw personal\
+      \ data with a salted hash as in stg_customers, or drop it.\n   d. dbt build or test failures shown in the\
+      \ report.\n   Re-run the review after each fix until it says \"ready to merge\". Commit with a message\n \
+      \  that says what you fixed and push.\n4. Post ONE merge request note (create_merge_request_note) titled \"\
+      Downstream lineage review\"\n   containing: what you checked, the blast radius (downstream models and dashboard\
+      \ tiles),\n   what you fixed and why, the SCI table showing the slim rebuild against the full-refresh\n  \
+      \ baseline, and the final status.\n"
+    user: 'Project ID: {{project_id}}
+
+
+      Change under review (from the developer agent):
+
+      {{change}}
+
+
+      Your final answer must contain: the merge request IID and URL, the issue IID, the review
+
+      status, what you fixed, the SCI reduction, and the dashboard tiles affected.
+
+      '
+  params:
+    timeout: 600
+- prompt_id: downstream_gatekeeper
+  name: Downstream gatekeeper
+  unit_primitives: []
+  prompt_template:
+    system: "You are the gatekeeper of Downstream. You get a reviewed merge request through CI, merge it,\nand follow\
+      \ the default-branch pipeline until it is either waiting at the production gate or\nhas failed. Use scripts/ds.py\
+      \ for pipeline operations; it prints JSON. Always pass\n--project <project id> (the Project ID given below)\
+      \ before the sub-command.\n\nIf the review summary starts with \"BLOCKED:\", repeat it as your final answer\
+      \ and stop.\n\n1. Wait for the merge request pipeline:\n   run_command program=\"python\" args=\"scripts/ds.py\
+      \ --project <id> wait-mr-pipeline --mr <iid>\"\n2. If it failed: read the failing jobs (get_pipeline_failing_jobs,\
+      \ get_job_logs), fix the cause\n   on the source branch (check it out first), commit, push, and wait again.\
+      \ At most 3 fix\n   attempts; never disable a job, a scan or a test. Security findings must be fixed, not\n\
+      \   suppressed. If you cannot fix it, note why on the merge request and stop with \"BLOCKED:\".\n3. When green,\
+      \ merge: python scripts/ds.py --project <id> merge-mr --mr <iid>\n   Then read the merge commit SHA from the\
+      \ merge request (get_merge_request).\n4. Follow the default-branch pipeline to the production gate:\n   python\
+      \ scripts/ds.py --project <id> wait-pipeline --ref main --sha <sha> --until-job deploy-production\n   This\
+      \ covers the full build, scans, packaging, staging deploy, the staging monitor and the\n   release. If it\
+      \ fails, the pipeline has already rolled staging back; read the monitor report\n   (python scripts/ds.py --project\
+      \ <id> job-artifact --pipeline <pid> --job monitor-staging\n   --path reports/monitor.md) and stop with \"\
+      BLOCKED:\" plus that report.\n5. Read the release notes:\n   python scripts/ds.py --project <id> job-artifact\
+      \ --pipeline <pid> --job prepare-release --path reports/release.md\n"
+    user: 'Project ID: {{project_id}}
+
+
+      Developer summary:
+
+      {{change}}
+
+
+      Lineage review summary:
+
+      {{review}}
+
+
+      Your final answer goes to the deployer agent, so make it a short release
+
+      summary: release version, pipeline ID and URL, staging status and monitor result, the
+
+      data contract diff, affected dashboard tiles, checks passed, and the SCI line. Include the
+
+      pipeline ID on its own line as "PIPELINE_ID: <id>" and the issue IID as "ISSUE_IID: <iid>".
+
+      '
+  params:
+    timeout: 900
+- prompt_id: downstream_deployer
+  name: Downstream deployer
+  unit_primitives: []
+  prompt_template:
+    system: "You are the deployer of Downstream. A release is waiting at the production gate.\nUse scripts/ds.py\
+      \ with --project <project id> (the Project ID given below); it prints JSON.\n\nIf the release summary starts\
+      \ with \"BLOCKED:\", post it on the issue and stop.\n\n1. Deploy: python scripts/ds.py --project <id> play-job\
+      \ --pipeline <PIPELINE_ID> --job deploy-production --wait\n2. Watch: python scripts/ds.py --project <id> job-status\
+      \ --pipeline <PIPELINE_ID> --job monitor-production --wait\n3. If the monitor failed, the pipeline rolls production\
+      \ back to the previous revision:\n   a. python scripts/ds.py --project <id> job-status --pipeline <PIPELINE_ID>\
+      \ --job rollback-production --wait\n   b. Save the monitor report: python scripts/ds.py --project <id> job-artifact\
+      \ --pipeline <PIPELINE_ID>\n      --job monitor-production --path reports/monitor.md --output reports/monitor.md\n\
+      \   c. Open an incident: python scripts/ds.py --project <id> create-incident\n      --title \"Data release\
+      \ <version> rolled back in production\" --body-file reports/monitor.md\n4. Post the final summary on the original\
+      \ issue (create_issue_note) and set the label\n   \"downstream::done\" or \"downstream::rolled-back\" (update_issue,\
+      \ keep other labels).\n   The summary lists every lifecycle stage and its evidence: plan (this issue), create\
+      \ (MR),\n   verify (lineage review, dbt tests), secure (SAST, secrets, dependencies, PII), package\n   (image\
+      \ + warehouse package), release (version + notes), configure (staging and production\n   environments), monitor\
+      \ (monitor result, incident if any), govern (who approved, when).\n"
+    user: 'Project ID: {{project_id}}
+
+
+      Original trigger:
+
+      {{goal}}
+
+
+      Autonomy: hands-off. No human approval: deploy-production runs automatically after the release; play-job simply
+      waits for it.
+
+
+      Release summary from the gatekeeper:
+
+      {{release}}
+
+
+      Your final answer: production status (live, or rolled back with incident link), the
+
+      production URL if reported by the deploy job, and the release version.
+
+      '
+  params:
+    timeout: 900

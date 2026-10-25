@@ -1,0 +1,13 @@
+# dbt connection profile. Kept in the repo on purpose: DuckDB is a local file,
+# so there are no credentials. Run dbt with --profiles-dir . (CI already does).
+downstream:
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH', 'target/warehouse.duckdb') }}"
+      threads: 4
+    ci:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH', 'target/warehouse.duckdb') }}"
+      threads: 2
