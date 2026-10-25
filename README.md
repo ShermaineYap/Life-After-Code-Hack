@@ -147,6 +147,9 @@ docs/                    setup guide, Devpost write-up, video script
   registry, and every script they call is tested here; their first live run happens
   in the hackathon's GitLab group. `docs/SETUP.md` lists what to check on that run.
 - The SCI energy figure uses CCF's average coefficients, not metered power.
+- The Review flow reviews merge requests that people open. Merge requests opened by the
+  Downstream flow's own service account don't trigger it (GitLab flow triggers only fire
+  on human actions); those are reviewed inside the main flow by the lineage reviewer.
 - Demo data is synthetic (fixed seed, fictional store and customers).
 
 ## License

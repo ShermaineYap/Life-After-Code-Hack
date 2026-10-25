@@ -23,6 +23,8 @@ def test_every_job_has_a_known_stage():
 def test_needs_reference_real_jobs():
     for name, job in JOBS.items():
         for need in job.get("needs", []):
+            if isinstance(need, dict) and need.get("optional"):
+                continue  # template jobs (scanners) that may not exist in every pipeline
             need = need["job"] if isinstance(need, dict) else need
             assert need in JOBS, f"{name} needs unknown job {need}"
 
@@ -48,6 +50,19 @@ def test_rollbacks_follow_their_monitors():
         assert any(r.get("when") == "on_failure" for r in job["rules"])
 
 
-def test_release_only_after_staging_is_verified():
-    assert "monitor-staging" in JOBS["prepare-release"]["needs"]
-    assert JOBS["release"]["image"].startswith("registry.gitlab.com/gitlab-org/cli")
+def test_release_only_after_staging_is_verified_and_scanned():
+    needs = JOBS["prepare-release"]["needs"]
+    assert "monitor-staging" in needs
+    assert {n["job"] for n in needs if isinstance(n, dict)} == {"semgrep-sast", "secret_detection", "dependency-scanning"}
+
+
+def test_script_lines_are_strings():
+    for name, job in JOBS.items():
+        for line in _resolved(job).get("script", []):
+            assert isinstance(line, str), f"{name}: {line!r} parses as YAML, quote it"
+
+
+def test_release_job_overrides_glab_entrypoint():
+    image = JOBS["release"]["image"]
+    assert image["name"].startswith("registry.gitlab.com/gitlab-org/cli")
+    assert image["entrypoint"] == [""]

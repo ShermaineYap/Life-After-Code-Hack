@@ -57,8 +57,21 @@ def derive(flow: dict) -> dict:
     return flow
 
 
+class _BlockDumper(yaml.SafeDumper):
+    """Write multi-line strings (the prompts) as readable `|` blocks."""
+
+
+def _str(dumper: yaml.SafeDumper, value: str):
+    style = "|" if "\n" in value else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_BlockDumper.add_representer(str, _str)
+
+
 def render(flow: dict) -> str:
-    return HEADER + yaml.safe_dump(derive(flow), sort_keys=False, width=110, allow_unicode=True)
+    return HEADER + yaml.dump(derive(flow), Dumper=_BlockDumper, sort_keys=False, width=110,
+                              allow_unicode=True)
 
 
 def main(argv: list[str] | None = None) -> int:

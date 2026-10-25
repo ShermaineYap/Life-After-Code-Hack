@@ -146,6 +146,8 @@ components:
         as: "goal"
       - from: "context:gatekeeper.final_answer"
         as: "release"
+      - from: "context:project_id"
+        as: "project_id"
     toolset:
       - "create_issue_note"
       - "update_issue"
@@ -224,6 +226,12 @@ prompts:
         You are the developer agent of Downstream. You implement a planned change to a dbt project
         and open a merge request. Read AGENTS.md first and follow its conventions exactly.
 
+        How to run commands: use the run_command tool with program + args (if your run_command
+        tool takes a single `command` string instead, pass the same program and arguments in it).
+        Waiting commands run for a long time: ALWAYS set the tool's timeout to 1800 seconds for
+        scripts/ds.py wait-*, play-job, job-status and merge-mr, and to 900 seconds for
+        scripts/downstream_review.sh. Without it the tool stops the command after 120 seconds.
+
         If the plan starts with "BLOCKED:", do nothing and repeat that as your final answer.
 
         Work in the repository checkout:
@@ -259,6 +267,12 @@ prompts:
       system: |
         You are the lineage reviewer of Downstream. You review a dbt merge request by its effect on
         everything downstream of it, not just its diff, and you fix what you find on the same branch.
+
+        How to run commands: use the run_command tool with program + args (if your run_command
+        tool takes a single `command` string instead, pass the same program and arguments in it).
+        Waiting commands run for a long time: ALWAYS set the tool's timeout to 1800 seconds for
+        scripts/ds.py wait-*, play-job, job-status and merge-mr, and to 900 seconds for
+        scripts/downstream_review.sh. Without it the tool stops the command after 120 seconds.
 
         If the change summary starts with "BLOCKED:", repeat it as your final answer and stop.
 
@@ -300,18 +314,26 @@ prompts:
         has failed. Use scripts/ds.py for pipeline operations; it prints JSON. Always pass
         --project <project id> (the Project ID given below) before the sub-command.
 
+        How to run commands: use the run_command tool with program + args (if your run_command
+        tool takes a single `command` string instead, pass the same program and arguments in it).
+        Waiting commands run for a long time: ALWAYS set the tool's timeout to 1800 seconds for
+        scripts/ds.py wait-*, play-job, job-status and merge-mr, and to 900 seconds for
+        scripts/downstream_review.sh. Without it the tool stops the command after 120 seconds.
+
         If the review summary starts with "BLOCKED:", repeat it as your final answer and stop.
 
         1. Wait for the merge request pipeline:
-           run_command program="python" args="scripts/ds.py --project <id> wait-mr-pipeline --mr <iid>"
+           run_command program="python" args="scripts/ds.py --project <id> wait-mr-pipeline --mr <iid> --timeout 1700" timeout=1800
+           It waits for the pipeline of the merge request's latest commit, so run it after every push.
         2. If it failed: read the failing jobs (get_pipeline_failing_jobs, get_job_logs), fix the cause
            on the source branch (check it out first), commit, push, and wait again. At most 3 fix
            attempts; never disable a job, a scan or a test. Security findings must be fixed, not
            suppressed. If you cannot fix it, note why on the merge request and stop with "BLOCKED:".
-        3. When green, merge: python scripts/ds.py --project <id> merge-mr --mr <iid>
-           Then read the merge commit SHA from the merge request (get_merge_request).
+        3. When green, merge: python scripts/ds.py --project <id> merge-mr --mr <iid> --timeout 1700
+           (tool timeout 1800). It waits until the merge lands and prints merge_commit_sha.
         4. Follow the default-branch pipeline to the production gate:
-           python scripts/ds.py --project <id> wait-pipeline --ref main --sha <sha> --until-job deploy-production
+           python scripts/ds.py --project <id> wait-pipeline --sha <merge_commit_sha> --until-job deploy-production --timeout 1700
+           (tool timeout 1800; --ref defaults to the default branch)
            This covers the full build, scans, packaging, staging deploy, the staging monitor and the
            release. If it fails, the pipeline has already rolled staging back; read the monitor report
            (python scripts/ds.py --project <id> job-artifact --pipeline <pid> --job monitor-staging
@@ -342,12 +364,18 @@ prompts:
         You are the deployer of Downstream. A release is waiting at the production gate.
         Use scripts/ds.py with --project <project id> (the Project ID given below); it prints JSON.
 
+        How to run commands: use the run_command tool with program + args (if your run_command
+        tool takes a single `command` string instead, pass the same program and arguments in it).
+        Waiting commands run for a long time: ALWAYS set the tool's timeout to 1800 seconds for
+        scripts/ds.py wait-*, play-job, job-status and merge-mr, and to 900 seconds for
+        scripts/downstream_review.sh. Without it the tool stops the command after 120 seconds.
+
         If the release summary starts with "BLOCKED:", post it on the issue and stop.
 
-        1. Deploy: python scripts/ds.py --project <id> play-job --pipeline <PIPELINE_ID> --job deploy-production --wait
-        2. Watch: python scripts/ds.py --project <id> job-status --pipeline <PIPELINE_ID> --job monitor-production --wait
+        1. Deploy: python scripts/ds.py --project <id> play-job --pipeline <PIPELINE_ID> --job deploy-production --wait --timeout 1700
+        2. Watch: python scripts/ds.py --project <id> job-status --pipeline <PIPELINE_ID> --job monitor-production --wait --timeout 1700
         3. If the monitor failed, the pipeline rolls production back to the previous revision:
-           a. python scripts/ds.py --project <id> job-status --pipeline <PIPELINE_ID> --job rollback-production --wait
+           a. python scripts/ds.py --project <id> job-status --pipeline <PIPELINE_ID> --job rollback-production --wait --timeout 1700
            b. Save the monitor report: python scripts/ds.py --project <id> job-artifact --pipeline <PIPELINE_ID>
               --job monitor-production --path reports/monitor.md --output reports/monitor.md
            c. Open an incident: python scripts/ds.py --project <id> create-incident
@@ -383,6 +411,8 @@ prompts:
         issue saying the release is verified and live on staging only, include the release summary,
         and add the label "downstream::staging-only" (keep other labels). Then stop.
       user: |
+        Project ID: {{project_id}}
+
         Original trigger:
         {{goal}}
 

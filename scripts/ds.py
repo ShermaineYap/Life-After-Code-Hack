@@ -37,6 +37,7 @@ import urllib.request
 from pathlib import Path
 
 TERMINAL = {"success", "failed", "canceled", "skipped", "manual"}
+DEFAULT_BRANCH = os.environ.get("CI_DEFAULT_BRANCH", "main")
 
 
 class GitLab:
@@ -115,15 +116,25 @@ def _out(obj: dict, code: int = 0) -> int:
 
 
 def cmd_wait_mr_pipeline(gl: GitLab, a) -> int:
+    """Wait for the pipeline of the merge request's CURRENT head commit.
+
+    Right after a push, the newest pipeline can still be the previous commit's;
+    a stale green result must never be mistaken for the new one.
+    """
     deadline = time.time() + a.timeout
-    pipelines = []
-    while not pipelines and time.time() < deadline:
-        pipelines = gl.get(f"/merge_requests/{a.mr}/pipelines")
-        if not pipelines:
+    head = gl.get(f"/merge_requests/{a.mr}").get("sha")
+    current = None
+    while current is None and time.time() < deadline:
+        for p in gl.get(f"/merge_requests/{a.mr}/pipelines"):
+            if p.get("sha") == head:
+                current = p
+                break
+        if current is None:
             time.sleep(a.poll)
-    if not pipelines:
-        return _out({"status": "none", "detail": "no pipeline found for this merge request"}, 1)
-    p = gl.wait_pipeline(pipelines[0]["id"], int(deadline - time.time()), a.poll)
+    if current is None:
+        return _out({"status": "none", "head_sha": head,
+                     "detail": "no pipeline yet for the merge request's head commit"}, 1)
+    p = gl.wait_pipeline(current["id"], int(max(deadline - time.time(), 0)), a.poll)
     res = {"pipeline_id": p["id"], "status": p["status"], "web_url": p["web_url"], "sha": p["sha"]}
     if p["status"] == "failed":
         res["failing_jobs"] = gl.failing_jobs(p["id"])
@@ -179,10 +190,17 @@ def cmd_merge_mr(gl: GitLab, a) -> int:
         res = gl.request("PUT", f"/merge_requests/{a.mr}/merge", payload)
     except RuntimeError as exc:
         return _out({"merged": False, "error": str(exc)}, 1)
+    # Auto-merge happens later: wait until it lands so the caller gets the merge SHA.
+    deadline = time.time() + a.timeout
+    while res.get("state") != "merged" and time.time() < deadline:
+        time.sleep(a.poll)
+        res = gl.get(f"/merge_requests/{a.mr}")
+        if res.get("state") == "closed":
+            break
+    sha = res.get("merge_commit_sha") or res.get("squash_commit_sha")
     return _out({"merged": res.get("state") == "merged", "state": res.get("state"),
-                 "auto_merge": res.get("merge_when_pipeline_succeeds") or res.get("auto_merge_enabled"),
-                 "merge_commit_sha": res.get("merge_commit_sha") or res.get("squash_commit_sha"),
-                 "web_url": res.get("web_url")})
+                 "merge_commit_sha": sha, "web_url": res.get("web_url")},
+                0 if res.get("state") == "merged" else 1)
 
 
 def cmd_play_job(gl: GitLab, a) -> int:
@@ -227,15 +245,21 @@ def cmd_job_artifact(gl: GitLab, a) -> int:
     return 0
 
 
+def _body(a) -> str:
+    if a.body_file and Path(a.body_file).exists():
+        return Path(a.body_file).read_text(encoding="utf-8")
+    return a.body or (f"(report file {a.body_file} was not produced)" if a.body_file else "")
+
+
 def cmd_create_incident(gl: GitLab, a) -> int:
-    body = Path(a.body_file).read_text(encoding="utf-8") if a.body_file else (a.body or "")
+    body = _body(a)
     res = gl.request("POST", "/issues", {"title": a.title, "description": body,
                                          "issue_type": "incident", "labels": a.labels})
     return _out({"incident_iid": res.get("iid"), "web_url": res.get("web_url")})
 
 
 def cmd_comment_issue(gl: GitLab, a) -> int:
-    body = Path(a.body_file).read_text(encoding="utf-8") if a.body_file else (a.body or "")
+    body = _body(a)
     res = gl.request("POST", f"/issues/{a.issue}/notes", {"body": body})
     return _out({"note_id": res.get("id")})
 
@@ -254,11 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mr", type=int, required=True)
 
     p = timed(sub.add_parser("wait-pipeline", help="wait for a branch pipeline (or one of its jobs)"))
-    p.add_argument("--ref", default="main")
+    p.add_argument("--ref", default=DEFAULT_BRANCH)
     p.add_argument("--sha")
     p.add_argument("--until-job", help="return as soon as this job settles, e.g. deploy-production at 'manual'")
 
-    p = sub.add_parser("merge-mr", help="merge when the pipeline succeeds")
+    p = timed(sub.add_parser("merge-mr", help="merge when the pipeline succeeds; waits and prints the merge SHA"))
     p.add_argument("--mr", type=int, required=True)
     p.add_argument("--now", action="store_true", help="merge immediately instead of auto-merge")
     p.add_argument("--squash", action="store_true")
@@ -275,7 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("job-artifact", help="read one artefact file from a job")
     p.add_argument("--pipeline", type=int, help="omit to use the last successful job on --ref")
-    p.add_argument("--ref", default="main")
+    p.add_argument("--ref", default=DEFAULT_BRANCH)
     p.add_argument("--job", required=True)
     p.add_argument("--path", required=True)
     p.add_argument("--output")

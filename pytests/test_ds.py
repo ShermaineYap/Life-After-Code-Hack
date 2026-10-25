@@ -46,16 +46,45 @@ def test_flow_token_wins_and_uses_bearer(monkeypatch, calls):
     assert gl.base == "https://gitlab.com/api/v4"
 
 
-def test_merge_requests_auto_merge(monkeypatch, calls):
+def test_merge_waits_for_auto_merge_and_returns_the_sha(monkeypatch, calls):
     seen, replies = calls
     monkeypatch.setenv("GITLAB_TOKEN", "t")
-    replies["/merge_requests/7"] = {"title": "feat: x", "draft": False}
+    replies["/merge_requests/7"] = {"title": "feat: x", "draft": False, "state": "opened"}
     replies["/merge_requests/7/merge"] = {"state": "opened", "merge_when_pipeline_succeeds": True}
-    assert ds.main(["--project", "1", "merge-mr", "--mr", "7"]) == 0
-    assert [m for m, *_ in seen] == ["GET", "PUT"]
-    method, url, _, body = seen[-1]
-    assert method == "PUT" and url.endswith("/merge_requests/7/merge")
-    assert body["auto_merge"] is True and body["should_remove_source_branch"] is True
+    real_request = ds.GitLab.request
+
+    def request(self, method, path, data=None, raw=False):
+        res = real_request(self, method, path, data, raw)
+        if method == "PUT":  # auto-merge queued; the next poll sees it merged
+            replies["/merge_requests/7"] = {"state": "merged", "merge_commit_sha": "abc123"}
+        return res
+
+    monkeypatch.setattr(ds.GitLab, "request", request)
+    assert ds.main(["--project", "1", "merge-mr", "--mr", "7", "--poll", "0", "--timeout", "5"]) == 0
+    assert [m for m, *_ in seen] == ["GET", "PUT", "GET"]
+    put = seen[1]
+    assert put[1].endswith("/merge_requests/7/merge")
+    assert put[3]["auto_merge"] is True and put[3]["should_remove_source_branch"] is True
+
+
+def test_mr_pipeline_ignores_the_previous_commits_pipeline(monkeypatch, calls):
+    seen, replies = calls
+    monkeypatch.setenv("GITLAB_TOKEN", "t")
+    replies["/merge_requests/3"] = {"sha": "new"}
+    replies["/merge_requests/3/pipelines"] = [{"id": 1, "sha": "old", "status": "success"}]
+    rc = ds.main(["--project", "1", "wait-mr-pipeline", "--mr", "3", "--timeout", "0", "--poll", "0"])
+    assert rc == 1  # the green pipeline belongs to the old commit
+    replies["/merge_requests/3/pipelines"] = [{"id": 2, "sha": "new"}, {"id": 1, "sha": "old"}]
+    replies["/pipelines/2"] = {"id": 2, "sha": "new", "status": "success", "web_url": "u"}
+    assert ds.main(["--project", "1", "wait-mr-pipeline", "--mr", "3", "--timeout", "5", "--poll", "0"]) == 0
+
+
+def test_missing_body_file_still_opens_the_incident(monkeypatch, calls, tmp_path):
+    seen, replies = calls
+    monkeypatch.setenv("GITLAB_TOKEN", "t")
+    assert ds.main(["--project", "1", "create-incident", "--title", "t",
+                    "--body-file", str(tmp_path / "missing.md")]) == 0
+    assert "was not produced" in seen[-1][3]["description"]
 
 
 def test_create_incident_sets_issue_type(monkeypatch, calls, tmp_path):

@@ -3,7 +3,7 @@
 # Merge request pipelines:  lineage review -> slim dbt build -> tests -> PII + SAST + secrets + dependencies
 # Default-branch pipelines: ... -> package (image + warehouse) -> staging (deploy + monitor, auto-rollback)
 #                            -> release (versioned, with evidence) -> production (approval gate) -> monitor
-# Scheduled pipelines:      hourly production monitor with automatic rollback.
+# Scheduled pipelines:      hourly production monitor (fails loudly; a release-time anomaly rolls back).
 #
 # The GitLab Duo flow in .gitlab/duo/flows/ drives this pipeline: it opens the merge
 # request, reads these reports, fixes what fails, merges, and presses the production
@@ -38,6 +38,7 @@ variables:
   STAGING_SERVICE: downstream-staging
   PRODUCTION_SERVICE: downstream-prod
   DEMO_INJECT_ANOMALY: "false"                      # set to "true" on a manual run to demo rollback
+  AST_ENABLE_MR_PIPELINES: "true"                   # run SAST/secret/dependency scans in MR pipelines
 
 .python:
   image: python:3.12-bookworm
@@ -89,7 +90,7 @@ dbt-build:
       when: never
     - when: on_success
   script:
-    - VARS="{inject_anomaly: ${DEMO_INJECT_ANOMALY}}"
+    - 'VARS="{inject_anomaly: ${DEMO_INJECT_ANOMALY}}"'
     # Merge requests rebuild only changed models and their descendants on top of
     # main's warehouse (slim CI). The default branch always does a full build:
     # it is the release artefact and the carbon baseline.
@@ -192,7 +193,7 @@ package-image:
 
 package-warehouse:
   stage: package
-  image: curlimages/curl:latest
+  image: curlimages/curl:8.11.1
   needs: [lineage-review, dbt-build, pii-sentinel]
   rules: *default_branch
   script:
@@ -239,10 +240,12 @@ package-warehouse:
   when: on_failure
   script:
     - bash scripts/rollback_cloudrun.sh "$SERVICE"
+    - mkdir -p reports
     - |
       if [ -n "${GITLAB_PRIVATE_TOKEN:-}" ]; then
+        [ -f reports/monitor.md ] || echo "Deploy failed before monitoring; see $CI_PIPELINE_URL" > reports/monitor.md
         python3 scripts/ds.py create-incident \
-          --title "Data release $RELEASE_VERSION rolled back on $CI_ENVIRONMENT_NAME" \
+          --title "Data release $RELEASE_VERSION rolled back on $SERVICE" \
           --body-file reports/monitor.md
       else
         echo "No GITLAB_PRIVATE_TOKEN: the Duo flow opens the incident instead."
@@ -281,7 +284,15 @@ rollback-staging:
 prepare-release:
   extends: .python
   stage: release
-  needs: [lineage-review, dbt-build, pii-sentinel, monitor-staging]
+  # Security gates the release: no version is cut unless every scan passed.
+  needs:
+    - lineage-review
+    - dbt-build
+    - pii-sentinel
+    - monitor-staging
+    - {job: semgrep-sast, optional: true}
+    - {job: secret_detection, optional: true}
+    - {job: dependency-scanning, optional: true}
   rules: *default_branch
   script:
     - python scripts/release_notes.py --previous "$PREVIOUS_VERSION" --lineage reports/lineage.json
@@ -293,7 +304,9 @@ prepare-release:
 
 release:
   stage: release
-  image: registry.gitlab.com/gitlab-org/cli:latest
+  image:
+    name: registry.gitlab.com/gitlab-org/cli:latest
+    entrypoint: [""]
   needs: [lineage-review, prepare-release]
   rules: *default_branch
   script:

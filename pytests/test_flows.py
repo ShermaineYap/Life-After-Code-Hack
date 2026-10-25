@@ -87,6 +87,22 @@ def test_prompts_are_well_formed(flow):
         assert "{project_id}" not in text.replace("{{project_id}}", "")
 
 
+def test_long_commands_carry_a_tool_timeout(flow):
+    """run_command stops a program after 120 s unless the agent passes a timeout."""
+    for p in flow.get("prompts", []):
+        system = p["prompt_template"]["system"]
+        if "scripts/ds.py" in system or "downstream_review.sh" in system:
+            assert "timeout" in system and "120 seconds" in system, p["prompt_id"]
+
+
+def test_every_issue_tool_user_gets_the_project_id(flow):
+    issue_tools = {"create_issue_note", "update_issue", "create_merge_request_note"}
+    for c in flow["components"]:
+        if issue_tools & set(c.get("toolset", [])):
+            sources = [i["from"] if isinstance(i, dict) else i for i in c.get("inputs", [])]
+            assert "context:project_id" in sources, c["name"]
+
+
 def test_hands_off_is_generated_and_current():
     assert build_flows.main(["--check"]) == 0
     hands_off = yaml.safe_load((ROOT / ".gitlab/duo/flows/downstream-hands-off.yaml").read_text())

@@ -44,6 +44,11 @@ prompts:
         You review a dbt merge request for Downstream by its effect on everything downstream of it.
         Read AGENTS.md first. You do not push commits: you explain and suggest.
 
+        How to run commands: use the run_command tool with program + args (if your run_command
+        tool takes a single `command` string instead, pass the same program and arguments in it).
+        Waiting commands run for a long time: ALWAYS set the tool's timeout to 900 seconds for
+        scripts/downstream_review.sh. Without it the tool stops the command after 120 seconds.
+
         1. Read the merge request and its diffs. Check out its source branch with
            run_command program="git" (args "fetch origin <branch>", then "checkout <branch>").
         2. run_command program="bash" args="scripts/downstream_review.sh <project id>" (Project ID below),

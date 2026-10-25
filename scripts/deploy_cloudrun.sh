@@ -31,6 +31,8 @@ gcloud run deploy "$SERVICE" --image "$IMAGE" --region "$REGION" \
   --min-instances 0 --max-instances 2 \
   --labels "app=downstream,release=$(echo "${RELEASE_VERSION:-dev}" | tr '.' '-' | tr 'A-Z' 'a-z')" \
   --quiet
+# A rollback pins traffic to an old revision; send traffic back to the new one.
+gcloud run services update-traffic "$SERVICE" --region "$REGION" --to-latest --quiet
 
 URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')
 NEW=$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.latestReadyRevisionName)')
