@@ -72,6 +72,17 @@ class GitLab:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 payload = resp.read()
         except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403) and method == "GET" and len(headers) > 1:
+                # A token without this API in its scope (a Duo flow's token, for some
+                # endpoints) can still read a public project anonymously.
+                anon = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
+                try:
+                    with urllib.request.urlopen(anon, timeout=60) as resp:
+                        payload = resp.read()
+                except urllib.error.HTTPError:
+                    payload = None
+                if payload is not None:
+                    return payload if raw else (json.loads(payload.decode("utf-8")) if payload else {})
             detail = exc.read().decode("utf-8", "replace")[:500]
             raise RuntimeError(f"{method} {path} -> HTTP {exc.code}: {detail}") from None
         if raw:
@@ -225,22 +236,35 @@ def cmd_job_status(gl: GitLab, a) -> int:
                  "web_url": job["web_url"]}, 0 if job["status"] == "success" else 1)
 
 
+def latest_successful_job(gl: GitLab, ref: str, name: str, scan: int = 20) -> dict | None:
+    """Newest successful job called `name` on `ref`.
+
+    Not GitLab's "artifacts of the latest successful pipeline" lookup: in
+    Supervised mode every default-branch pipeline stops at the manual production
+    gate (status "manual"), so there may be no "successful" pipeline at all even
+    though its build job succeeded.
+    """
+    q = urllib.parse.quote(ref, safe="")
+    for p in gl.get(f"/pipelines?ref={q}&per_page={scan}&order_by=id&sort=desc"):
+        for j in gl.get(f"/pipelines/{p['id']}/jobs?per_page=100&scope[]=success"):
+            if j["name"] == name:
+                return j
+    return None
+
+
 def cmd_job_artifact(gl: GitLab, a) -> int:
-    job = gl.job_by_name(a.pipeline, a.job) if a.pipeline else None
-    if a.pipeline and not job:
-        return _out({"error": f"job {a.job} not found"}, 1)
     try:
-        if job:
-            data = gl.request("GET", f"/jobs/{job['id']}/artifacts/{a.path}", raw=True)
-        else:
-            q = urllib.parse.quote(a.ref, safe="")
-            data = gl.request("GET", f"/jobs/artifacts/{q}/raw/{a.path}?job={urllib.parse.quote(a.job)}", raw=True)
+        job = gl.job_by_name(a.pipeline, a.job) if a.pipeline else latest_successful_job(gl, a.ref, a.job)
+        if not job:
+            where = f"pipeline {a.pipeline}" if a.pipeline else f"recent {a.ref} pipelines"
+            return _out({"error": f"no successful job {a.job} in {where}"}, 1)
+        data = gl.request("GET", f"/jobs/{job['id']}/artifacts/{a.path}", raw=True)
     except RuntimeError as exc:
         return _out({"error": str(exc)}, 1)
     if a.output:
         Path(a.output).parent.mkdir(parents=True, exist_ok=True)
         Path(a.output).write_bytes(data)
-        return _out({"saved": a.output, "bytes": len(data)})
+        return _out({"saved": a.output, "bytes": len(data), "job_id": job["id"]})
     sys.stdout.write(data.decode("utf-8", "replace"))
     return 0
 
@@ -298,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--wait", action="store_true")
 
     p = sub.add_parser("job-artifact", help="read one artefact file from a job")
-    p.add_argument("--pipeline", type=int, help="omit to use the last successful job on --ref")
+    p.add_argument("--pipeline", type=int, help="omit to use the newest successful job of that name on --ref")
     p.add_argument("--ref", default=DEFAULT_BRANCH)
     p.add_argument("--job", required=True)
     p.add_argument("--path", required=True)

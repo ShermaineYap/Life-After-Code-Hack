@@ -110,3 +110,34 @@ def test_missing_project_is_reported(monkeypatch, calls):
     monkeypatch.delenv("CI_PROJECT_PATH", raising=False)
     with pytest.raises(SystemExit):
         ds.GitLab(None)
+
+
+def test_artifact_comes_from_newest_successful_job_even_when_pipelines_wait_at_the_gate(monkeypatch, calls, tmp_path):
+    """Found live: main pipelines sit at 'manual', so "latest successful pipeline" had no artifacts."""
+    seen, replies = calls
+    monkeypatch.setenv("GITLAB_TOKEN", "t")
+    replies["/pipelines"] = [{"id": 30, "status": "manual"}, {"id": 20, "status": "failed"}]
+    replies["/pipelines/30/jobs"] = [{"id": 301, "name": "dbt-build", "status": "success"}]
+    replies["/jobs/301/artifacts/reports/sci.json"] = {"current": {"sci": 1}}
+    out = tmp_path / "sci.json"
+    assert ds.main(["--project", "1", "job-artifact", "--job", "dbt-build", "--path", "reports/sci.json",
+                    "--output", str(out)]) == 0
+    assert json.loads(out.read_text()) == {"current": {"sci": 1}}
+
+
+def test_public_project_read_retries_anonymously_on_403(monkeypatch):
+    calls_made = []
+
+    class Resp(FakeResp):
+        pass
+
+    def fake_urlopen(req, timeout=60):
+        calls_made.append(dict(req.header_items()))
+        if "Authorization" in dict(req.header_items()):
+            raise ds.urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+        return Resp({"ok": True})
+
+    monkeypatch.setattr(ds.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("GITLAB_TOKEN", "t")
+    assert ds.GitLab("1").get("/pipelines") == {"ok": True}
+    assert len(calls_made) == 2 and "Authorization" not in calls_made[1]
