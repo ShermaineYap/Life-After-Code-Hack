@@ -39,6 +39,10 @@ variables:
   PRODUCTION_SERVICE: downstream-prod
   DEMO_INJECT_ANOMALY: "false"                      # set to "true" on a manual run to demo rollback
   AST_ENABLE_MR_PIPELINES: "true"                   # run SAST/secret/dependency scans in MR pipelines
+  # Dependency scanning reads the committed pip-compile lockfile instead of resolving
+  # dependencies in a separate .pre job (that job's helper service timed out on GitLab.com).
+  DS_DISABLED_RESOLUTION_JOBS: "python"
+  DS_PIPCOMPILE_LOCKFILE_FILE_NAME_PATTERN: "requirements.lock.txt"
 
 .python:
   image: python:3.12-bookworm
