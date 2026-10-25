@@ -66,3 +66,11 @@ def test_release_job_overrides_glab_entrypoint():
     image = JOBS["release"]["image"]
     assert image["name"].startswith("registry.gitlab.com/gitlab-org/cli")
     assert image["entrypoint"] == [""]
+
+
+def test_version_step_fetches_tags_first():
+    """Found live: runner clones have no tags, so the second release recomputed v1.0.0."""
+    script = JOBS["lineage-review"]["script"]
+    fetch = next(i for i, line in enumerate(script) if "git fetch --tags" in line)
+    read = next(i for i, line in enumerate(script) if "git tag --list" in line)
+    assert fetch < read

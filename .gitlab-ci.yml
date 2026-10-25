@@ -74,6 +74,8 @@ lineage-review:
     - python scripts/lineage_impact.py
         --manifest target/manifest.json --state-manifest state/manifest.json --state-catalog state/catalog.json
         --json reports/lineage.json --markdown reports/lineage.md --fail-on-breaking
+    # Runner clones don't fetch tags, and without them every release would think it is the first.
+    - git fetch --tags --force --quiet origin || echo "could not fetch tags, assuming first release"
     - PREVIOUS=$(git tag --list 'v*' --sort=-v:refname | head -n1)
     - python scripts/release_notes.py --previous "$PREVIOUS" --lineage reports/lineage.json --out-dir reports
     - echo "RELEASE_VERSION=$(cat reports/version.txt)" > release.env
