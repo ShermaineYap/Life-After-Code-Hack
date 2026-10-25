@@ -31,7 +31,6 @@ components:
       - "list_dir"
       - "find_files"
       - "grep"
-    max_cycles: 25
     ui_log_events: ["on_agent_final_answer", "on_tool_execution_success", "on_tool_execution_failed"]
 
   - name: "developer"
@@ -54,7 +53,6 @@ components:
       - "run_command"
       - "create_merge_request"
       - "create_issue_note"
-    max_cycles: 60
     ui_log_events: ["on_agent_final_answer", "on_tool_execution_success", "on_tool_execution_failed"]
 
   - name: "lineage_reviewer"
@@ -77,7 +75,6 @@ components:
       - "get_merge_request"
       - "list_merge_request_diffs"
       - "create_merge_request_note"
-    max_cycles: 60
     ui_log_events: ["on_agent_final_answer", "on_tool_execution_success", "on_tool_execution_failed"]
 
   - name: "gatekeeper"
@@ -100,7 +97,6 @@ components:
       - "get_job_logs"
       - "get_merge_request"
       - "create_merge_request_note"
-    max_cycles: 80
     ui_log_events: ["on_agent_final_answer", "on_tool_execution_success", "on_tool_execution_failed"]
 
   - name: "production_approval"
@@ -135,7 +131,6 @@ components:
       - "create_issue_note"
       - "update_issue"
       - "get_job_logs"
-    max_cycles: 40
     ui_log_events: ["on_agent_final_answer", "on_tool_execution_success", "on_tool_execution_failed"]
 
   - name: "decline_reporter"
@@ -151,7 +146,6 @@ components:
     toolset:
       - "create_issue_note"
       - "update_issue"
-    max_cycles: 8
     ui_log_events: ["on_agent_final_answer"]
 
 routers:

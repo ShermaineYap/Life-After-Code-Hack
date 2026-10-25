@@ -48,6 +48,9 @@ def test_components(flow):
         assert ":" not in c["name"] and "." not in c["name"]
         if c["type"] == "AgentComponent":
             assert c["prompt_id"] in prompts, c["name"]
+            # Rejected by GitLab.com's custom-flow schema ("disallowed additional property"),
+            # found on the first live registration even though the v1 spec documents it.
+            assert "max_cycles" not in c, c["name"]
             assert "prompt_version" not in c          # local prompts only
             assert "response_schema_id" not in c      # not supported in custom flows
             assert set(c.get("toolset", [])) <= KNOWN_TOOLS, set(c["toolset"]) - KNOWN_TOOLS

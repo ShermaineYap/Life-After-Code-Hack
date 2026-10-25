@@ -25,7 +25,6 @@ components:
       - "run_command"
       - "create_merge_request_note"
       - "create_merge_request_diff_note"
-    max_cycles: 40
     ui_log_events: ["on_agent_final_answer", "on_tool_execution_success", "on_tool_execution_failed"]
 
 routers:
