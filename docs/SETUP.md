@@ -34,7 +34,9 @@ Then in GitLab:
 - **Settings > General > Visibility**: project **Public**. Pipelines visibility: everyone.
 - Check the **About** panel on the project page shows **MIT License** (it reads `LICENSE`).
 - **Settings > Repository > Protected branches > main**: *Allowed to merge* =
-  **Developers + Maintainers** (the flow's service account is a Developer and merges via auto-merge).
+  **Developers + Maintainers**. If the flow's token is not allowed to merge (on GitLab.com it
+  gets `403 insufficient_scope`), the gatekeeper comments on the merge request asking a
+  maintainer to press **Merge**, then carries on once it lands.
   *Allowed to push and merge* = **No one**.
 - **Settings > Repository > Push rules**: if any rule is on, make sure it doesn't block
   service accounts (the flow pushes branches).

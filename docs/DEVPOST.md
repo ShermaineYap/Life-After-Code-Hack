@@ -45,6 +45,7 @@ The flow ends by posting a summary of all nine stages on the original issue.
 - Designing around the platform's rule that flows can't trigger flows: the single-orchestrator design keeps every step visible in one session and one pipeline.
 - Agents' `run_command` has no shell, so the whole review is one script that writes one report the agent can read, fix from and re-run.
 - Releases and registries are outside the flow token's API scope, so deterministic steps live in CI and the flow orchestrates them.
+- Found in a live run: the flow token can't merge merge requests (`403 insufficient_scope`). Rather than work around it, the gatekeeper hands that one button to a maintainer on the merge request and waits, which also gives a person a look at every change before it reaches `main`.
 
 ## Accomplishments
 

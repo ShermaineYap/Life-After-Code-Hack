@@ -80,8 +80,10 @@ deployment or an incident.
 Duo flow triggers only fire on human actions, so a flow cannot hand off to another
 flow by merging or running a pipeline. Downstream therefore runs as **one orchestrator
 flow** whose agents drive GitLab directly through `scripts/ds.py` (wait for a pipeline,
-auto-merge, press the manual production job, read a job's artefacts, open an
-incident). Everything deterministic (builds, scans, releases, deploys, rollbacks) is a
+merge, press the manual production job, read a job's artefacts, open an
+incident). Where GitLab doesn't let a flow's token merge, the gatekeeper asks a
+maintainer on the merge request to press **Merge** and waits; it never works around
+the permission. Everything deterministic (builds, scans, releases, deploys, rollbacks) is a
 CI job, so it shows up in pipeline history and runs the same way with or without an agent.
 
 Agents run one command for the whole review, `bash scripts/downstream_review.sh`,

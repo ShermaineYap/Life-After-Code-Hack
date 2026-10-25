@@ -25,7 +25,7 @@ What should happen: triage writes a plan; the developer adds
 `fct_monthly_active_customers` and renames the column; (a verified correct end state is
 `demo/monthly-active-customers.patch`: `git apply demo/monthly-active-customers.patch`); the **lineage reviewer catches that the rename breaks `fct_revenue` and
 `int_customer_orders`**, fixes both, adds the missing key tests, and posts the SCI
-comparison; CI goes green; the gatekeeper merges; staging deploys and passes its
+comparison; CI goes green; the gatekeeper asks you to press Merge (or merges, where the flow is allowed to); staging deploys and passes its
 monitor; release `v1.1.0` is cut with a data-contract changelog; you approve
 production; the dashboard shows the new tile.
 
