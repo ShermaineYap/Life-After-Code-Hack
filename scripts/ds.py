@@ -200,7 +200,15 @@ def cmd_merge_mr(gl: GitLab, a) -> int:
     try:
         res = gl.request("PUT", f"/merge_requests/{a.mr}/merge", payload)
     except RuntimeError as exc:
-        return _out({"merged": False, "error": str(exc)}, 1)
+        if "403" not in str(exc):
+            return _out({"merged": False, "error": str(exc)}, 1)
+        # A flow's token may not merge (403 insufficient_scope). Hand the button to a person
+        # and wait for them; never work around the permission.
+        gl.request("POST", f"/merge_requests/{a.mr}/notes", {"body": (
+            "Downstream: the pipeline is green and this merge request is ready, but this flow is not "
+            "permitted to merge it. A maintainer, please press **Merge**; the release continues "
+            "automatically once it lands.")})
+        res = {"state": mr.get("state"), "handed_to_human": True}
     # Auto-merge happens later: wait until it lands so the caller gets the merge SHA.
     deadline = time.time() + a.timeout
     while res.get("state") != "merged" and time.time() < deadline:

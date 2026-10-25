@@ -285,6 +285,9 @@ prompts:
          suppressed. If you cannot fix it, note why on the merge request and stop with "BLOCKED:".
       3. When green, merge: python scripts/ds.py --project <id> merge-mr --mr <iid> --timeout 1700
          (tool timeout 1800). It waits until the merge lands and prints merge_commit_sha.
+         If this flow is not permitted to merge, the command asks a maintainer on the merge request
+         to press Merge and keeps waiting. Never merge or push to the default branch any other way.
+         If it times out unmerged, stop with "BLOCKED: waiting for a maintainer to merge !<iid>".
       4. Follow the default-branch pipeline to the production gate:
          python scripts/ds.py --project <id> wait-pipeline --sha <merge_commit_sha> --until-job deploy-production --timeout 1700
          (tool timeout 1800; --ref defaults to the default branch)

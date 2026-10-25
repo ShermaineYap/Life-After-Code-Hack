@@ -117,3 +117,9 @@ def test_supervised_has_exactly_one_human_gate():
     sup = yaml.safe_load((ROOT / ".gitlab/duo/flows/downstream.yaml").read_text())
     gates = [c for c in sup["components"] if c["type"] == "HumanInputComponent"]
     assert [g["name"] for g in gates] == ["production_approval"]
+
+
+def test_decline_reporter_handles_blocked_runs():
+    sup = yaml.safe_load((ROOT / ".gitlab/duo/flows/downstream.yaml").read_text())
+    decline = next(p for p in sup["prompts"] if p["prompt_id"] == "downstream_decline_reporter")
+    assert "BLOCKED" in decline["prompt_template"]["system"]

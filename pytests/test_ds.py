@@ -141,3 +141,25 @@ def test_public_project_read_retries_anonymously_on_403(monkeypatch):
     monkeypatch.setenv("GITLAB_TOKEN", "t")
     assert ds.GitLab("1").get("/pipelines") == {"ok": True}
     assert len(calls_made) == 2 and "Authorization" not in calls_made[1]
+
+
+def test_merge_without_permission_asks_a_maintainer_and_waits(monkeypatch, calls):
+    """Found live: a flow token gets 403 insufficient_scope on PUT /merge_requests/:iid/merge."""
+    seen, replies = calls
+    monkeypatch.setenv("GITLAB_TOKEN", "t")
+    replies["/merge_requests/1"] = {"title": "x", "state": "opened"}
+    real_request = ds.GitLab.request
+
+    def request(self, method, path, data=None, raw=False):
+        if method == "PUT" and path.endswith("/merge"):
+            raise RuntimeError("PUT /merge_requests/1/merge -> 403 insufficient_scope")
+        res = real_request(self, method, path, data, raw)
+        if method == "POST":  # a person merges after the note
+            replies["/merge_requests/1"] = {"state": "merged", "merge_commit_sha": "m1"}
+        return res
+
+    monkeypatch.setattr(ds.GitLab, "request", request)
+    assert ds.main(["--project", "1", "merge-mr", "--mr", "1", "--poll", "0", "--timeout", "5"]) == 0
+    assert not any(m == "PUT" for m, *_ in seen)
+    note = next(b for m, u, _, b in seen if m == "POST")
+    assert "press **Merge**" in note["body"]
